@@ -1,41 +1,102 @@
-import { WebSocketServer } from 'ws'; // Import the WebSocketServer correctly
+const WebSocket = require('ws');
+const http = require('http');
+const url = require('url');
+const { performance } = require('perf_hooks');
 
-// Create a WebSocket server
-const server = new WebSocketServer({ port: 8080 }); // Ensure the port is set correctly
+const PORT = 8080;
+let clientSocket = null;
+let connectedAt = null;
+let connectedAtPerf = null;
+let durationInterval = null;
 
-// Handle WebSocket connection events
-server.on('connection', (ws) => {
-    console.log('New client connected!');
-    console.time();
+// Create HTTP server
+const server = http.createServer((req, res) => {
+  const parsedUrl = url.parse(req.url, true);
 
-    // Send a welcome message when the client connects
-    const data = { timestamp: new Date(), message: 'Welcome to the WebSocket server!' };
-    ws.send(JSON.stringify(data)); // Send data as JSON string
-    console.log('Sent data to client:', data);
-
-    // Regularly send data to the client
-    setInterval(() => {
-        const data = { timestamp: new Date(), message: 'Hello from the server!' };
-        ws.send(JSON.stringify(data)); // Send data as JSON string
-        console.log('Sent data to client:', data);
-    }, 10000);
-
-    // Listen for messages from the client
-    ws.on('message', (message) => {
-        console.log(`Received message: ${message}`);
+  // Heartbeat POST endpoint
+  if (parsedUrl.pathname === '/heartbeat' && req.method === 'POST') {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', () => {
+      console.log(`[${new Date().toISOString()}] Heartbeat received`);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ status: 'ok', timestamp: new Date().toISOString() }));
     });
+    return;
+  }
 
-    // Handle WebSocket close
-    ws.on('close', () => {
-        console.log('Client disconnected.');
-        console.timeEnd();
-    });
-    
-    // Handle WebSocket errors
-    ws.on('error', (error) => {
-        console.log('WebSocket error:', error);
-        console.timeEnd();
-    });
+  // Fallback for other routes
+  res.writeHead(404, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify({ error: 'Not Found' }));
 });
 
-console.log('WebSocket server is running on ws://localhost:8080');
+// WebSocket server
+const wss = new WebSocket.Server({ server });
+
+wss.on('connection', (ws) => {
+  clientSocket = ws;
+  connectedAt = new Date();
+  connectedAtPerf = performance.now();
+
+  console.log(`[${connectedAt.toISOString()}] Client connected`);
+
+  // Start logging duration every second
+  durationInterval = setInterval(() => {
+    const seconds = ((performance.now() - connectedAtPerf) / 1000).toFixed(2);
+    console.log(`⏳ Connection duration: ${seconds} seconds`);
+  }, 1000);
+
+  // Send welcome message
+  ws.send(JSON.stringify({
+    type: 'welcome',
+    message: 'Welcome! You are connected.',
+    timestamp: connectedAt.toISOString(),
+  }));
+
+  // Send message after 1 minute
+  // Send a message every 1 minute
+const messageInterval = setInterval(() => {
+  if (clientSocket && clientSocket.readyState === WebSocket.OPEN) {
+    const msg = {
+      type: 'server_message',
+      message: 'This is a repeated message from the server every 1 minute.',
+      timestamp: new Date().toISOString(),
+    };
+    clientSocket.send(JSON.stringify(msg));
+    console.log(`[${msg.timestamp}] Sent recurring message to client`);
+  }
+}, 60000);
+
+ws.on('message', (message) => {
+
+    const parsed = JSON.parse(message);
+    console.log(`[${new Date().toISOString()}] 📩 Received from client:`, parsed);
+});     
+
+
+  // On client disconnect
+  ws.on('close', () => {
+    const disconnectedAt = new Date();
+    const duration = ((performance.now() - connectedAtPerf) / 1000).toFixed(2);
+    console.log(`[${disconnectedAt.toISOString()}] Client disconnected`);
+    console.log(`⏱️ Connection lasted: ${duration} seconds`);
+
+    // Stop duration logging
+    clearInterval(durationInterval);
+    clearInterval(messageInterval);
+    durationInterval = null;
+
+    clientSocket = null;
+  });
+
+  // Error handling
+  ws.on('error', (err) => {
+    console.error(`[${new Date().toISOString()}] WebSocket error:`, err);
+  });
+});
+
+// Start server
+server.listen(PORT, () => {
+  console.log(`[${new Date().toISOString()}] Server running on port ${PORT}`);
+  console.log(`Heartbeat endpoint: POST http://localhost:${PORT}/heartbeat`);
+});
